@@ -1,91 +1,100 @@
-import cv2
 import numpy as np
-import matplotlib.pyplot as plt
+import pandas as pd
+from PIL import Image
+from scipy.stats import linregress
 
-# ---------------------------
-# Load + preprocess image
-# ---------------------------
-def load_binary_image(path, threshold=127, invert=True):
-    """
-    Loads a PNG/JPG image, converts to grayscale and binary.
-    invert=True means white=background, black=roads/buildings.
-    """
-    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        raise FileNotFoundError("Image not found or unreadable")
+# -----------------------------------
+# Load PNG Image
+# -----------------------------------
 
-    _, bw = cv2.threshold(img, threshold, 255, cv2.THRESH_BINARY)
-    if invert:
-        bw = 255 - bw
+image_path = "highway_istanbul.png"
 
-    return (bw > 0).astype(np.uint8)
+img = Image.open(image_path).convert("L")
+img = np.array(img)
 
-# ---------------------------
-# Box Counting
-# ---------------------------
+# Convert to binary
+# Black urban pixels = 1
+# White background = 0
+
+binary = img < 128
+
+# -----------------------------------
+# Box Counting Function
+# -----------------------------------
+
 def boxcount(Z, k):
-    """
-    Count the number of non-empty k×k boxes.
-    """
-    h, w = Z.shape
-    h = (h // k) * k
-    w = (w // k) * k
-    Z = Z[:h, :w]
 
-    Zb = Z.reshape(h//k, k, w//k, k)
-    blocks = Zb.sum(axis=(1,3))
-    return np.count_nonzero(blocks)
+    rows = Z.shape[0] // k
+    cols = Z.shape[1] // k
 
-def fractal_dimension_boxcount(Z):
-    """
-    Estimate box-counting fractal dimension from binary image Z.
-    """
-    assert Z.ndim == 2
+    count = 0
 
-    # Choose box sizes = powers of 2
-    p = min(Z.shape)
-    n = 2**int(np.floor(np.log2(p)))
-    sizes = 2**np.arange(int(np.log2(n)), 1, -1)
+    for i in range(rows):
+        for j in range(cols):
 
-    counts = []
-    for s in sizes:
-        c = boxcount(Z, int(s))
-        if c > 0:
-            counts.append(c)
-        else:
-            counts.append(np.nan)
+            box = Z[
+                i*k:(i+1)*k,
+                j*k:(j+1)*k
+            ]
 
-    # Convert to arrays
-    sizes = np.array(sizes, dtype=float)
-    counts = np.array(counts, dtype=float)
+            if np.any(box):
+                count += 1
 
-    # Clean invalid values
-    mask = np.isfinite(counts) & (counts > 0)
-    x = np.log(1/sizes[mask])
-    y = np.log(counts[mask])
+    return count
 
-    # Linear regression
-    slope, intercept = np.polyfit(x, y, 1)
-    D = slope
+# -----------------------------------
+# Generate Box Sizes
+# -----------------------------------
 
-    # Plot
-    plt.figure(figsize=(6,5))
-    plt.scatter(x, y, label=f"D = {D:.4f}")
-    plt.plot(x, slope*x + intercept, 'r--')
-    plt.xlabel("log(1/ε)")
-    plt.ylabel("log(N(ε))")
-    plt.title("Box-Counting Fractal Dimension")
-    plt.grid(True)
-    plt.legend()
-    plt.show()
+p = min(binary.shape)
 
-    return D
+sizes = []
 
-# ---------------------------
-# RUN
-# ---------------------------
-if __name__ == "__main__":
-    path = "dubai_highway.png"   # change this
-    img = load_binary_image(path, threshold=127, invert=True)
-    D = fractal_dimension_boxcount(img)
-    print("Box-counting Dimension =", D)
+k = 2
+
+while k <= p // 2:
+    sizes.append(k)
+    k *= 2
+
+# -----------------------------------
+# Count Occupied Boxes
+# -----------------------------------
+
+counts = []
+
+for size in sizes:
+    counts.append(boxcount(binary, size))
+
+# -----------------------------------
+# Create Dataset
+# -----------------------------------
+
+log_size = np.log(1/np.array(sizes))
+log_count = np.log(np.array(counts))
+
+dataset = pd.DataFrame({
+    "Box_Size": sizes,
+    "Box_Count": counts,
+    "Log_1_Size": log_size,
+    "Log_Count": log_count
+})
+
+dataset.to_csv(
+    "istanbul_box_counting_dataset.csv",
+    index=False
+)
+
+# -----------------------------------
+# Fractal Dimension
+# -----------------------------------
+
+slope, intercept, r_value, p_value, std_err = linregress(
+    log_size,
+    log_count
+)
+
+print("\nBox Counting Dimension =", slope)
+print("R² =", r_value**2)
+
+print("\nDataset saved as:")
+print("istanbul_box_counting_dataset.csv")
